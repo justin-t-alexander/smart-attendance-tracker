@@ -2,6 +2,7 @@ from fastapi import FastAPI
 from api.attendance import router as attendance_router
 from models.database import Base, engine
 
+
 Base.metadata.create_all(bind=engine)
 
 
@@ -9,7 +10,7 @@ Base.metadata.create_all(bind=engine)
 app = FastAPI()
 
 
-app.include_router(attendance_router, prefix="/api/attendance")
+app.include_router(attendance_router)
 
 
 @app.get("/test")
