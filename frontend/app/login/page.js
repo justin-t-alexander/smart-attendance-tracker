@@ -3,7 +3,6 @@
 "use client";
 
 import { useState } from "react";
-import { signIn } from "next-auth/react";
 import { useRouter } from "next/navigation";
 
 export default function Login() {
@@ -15,16 +14,34 @@ export default function Login() {
   const handleSubmit = async (e) => {
     e.preventDefault();
 
-    const res = await signIn("credentials", {
-      redirect: false,
-      username,
-      password,
-    });
+    try {
+      const res = await fetch("http://localhost:8000/api/login", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ username, password }),
+      });
 
-    if (res.ok) {
-      router.push("/"); // Redirect after login
-    } else {
-      setError("Invalid username or password");
+      const data = await res.json();
+
+      if (!res.ok) {
+        setError(data.detail || "Login failed");
+        return;
+      }
+
+      // Save token to localStorage
+      localStorage.setItem("token", data.token);
+
+      // Optionally save other user info if needed
+      localStorage.setItem("username", data.username);
+      localStorage.setItem("userId", data.id);
+
+      // Redirect to attendance page
+      router.push("/attendance");
+    } catch (err) {
+      console.error("Login error:", err);
+      setError("Something went wrong. Please try again.");
     }
   };
 
@@ -132,3 +149,4 @@ export default function Login() {
     </div>
   );
 }
+// Note: Make sure to handle token expiration and logout in your application logic.
