@@ -1,13 +1,10 @@
 from fastapi import FastAPI
-from api.attendance import router as attendance_router
+from api.attendance import router as attendance_router  # existing
 from models.database import Base, engine
 from fastapi.middleware.cors import CORSMiddleware
 
-
-
-
 app = FastAPI()
-# Middleware to handle CORS
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://localhost:3000"],
@@ -16,16 +13,12 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-
 Base.metadata.create_all(bind=engine)
 
-
-
-
-
+# Include routers
 app.include_router(attendance_router)
 
-
+# This is a simple test endpoint to verify that the server is running
 @app.get("/test")
 def test_endpoint():
     return {"message": "Server is working"}

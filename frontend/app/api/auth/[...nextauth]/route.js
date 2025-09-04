@@ -2,52 +2,54 @@
 import NextAuth from "next-auth";
 import CredentialsProvider from "next-auth/providers/credentials";
 
-export default NextAuth({
+const authOptions = {
   providers: [
     CredentialsProvider({
       name: "Credentials",
       credentials: {
         username: { label: "Username", type: "text" },
-        password: { label: "Password", type: "password" }
+        password: { label: "Password", type: "password" },
       },
       async authorize(credentials) {
-        const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/auth/login`, {
+        const res = await fetch("http://localhost:8000/api/login", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
             username: credentials.username,
-            password: credentials.password
-          })
+            password: credentials.password,
+          }),
         });
 
-        const data = await res.json();
+        const user = await res.json();
 
-        if (res.ok && data.access_token) {
+        if (res.ok && user?.token) {
           return {
-            id: data.user_id,        // you must return an object
-            name: data.username,
-            token: data.access_token // include JWT in session
+            id: user.id,
+            username: user.username,
+            accessToken: user.token,
           };
         }
 
         return null;
-      }
-    })
+      },
+    }),
   ],
   session: {
-    strategy: "jwt"
+    strategy: "jwt",
   },
   callbacks: {
     async jwt({ token, user }) {
-      if (user) {
-        token.accessToken = user.token;
+      if (user?.accessToken) {
+        token.accessToken = user.accessToken;
       }
       return token;
     },
     async session({ session, token }) {
       session.accessToken = token.accessToken;
       return session;
-    }
+    },
   },
-  secret: process.env.NEXTAUTH_SECRET
-});
+};
+
+const handler = NextAuth(authOptions);
+export { handler as GET, handler as POST };

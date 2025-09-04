@@ -1,158 +1,110 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { useRouter } from "next/navigation";
+import { useSession } from "next-auth/react";
 
 export default function Attendance() {
-  const [user, setUser] = useState(null);
-  const [loading, setLoading] = useState(true);
+  const [selectedFile, setSelectedFile] = useState(null);
+  const [name, setName] = useState("");
+  const [message, setMessage] = useState("");
   const router = useRouter();
+  const { data: session, status } = useSession();
 
-  useEffect(() => {
-    const fetchUser = async () => {
-      const token = localStorage.getItem("token");
-      if (!token) {
-        router.push("/login");
-        return;
-      }
+  const handleFileChange = (event) => {
+    setSelectedFile(event.target.files[0]);
+  };
 
-      try {
-        const res = await fetch("http://127.0.0.1:8000/auth/user", {
-          headers: {
-            Authorization: `Bearer ${token}`,
-          },
-        });
+  const handleUpload = async () => {
+    if (!selectedFile || !name) {
+      setMessage("Please provide a name and select a file.");
+      return;
+    }
 
-        if (res.ok) {
-          const userData = await res.json();
-          setUser(userData);
-        } else {
-          localStorage.removeItem("token");
-          router.push("/login");
-        }
-      } catch (err) {
-        console.error("Error fetching user:", err);
-        router.push("/login");
-      } finally {
-        setLoading(false);
-      }
-    };
+    if (!session?.accessToken) {
+      setMessage("You must be logged in to register a face.");
+      return;
+    }
 
-    fetchUser();
-  }, []);
-
-  if (loading) {
-    return (
-      <div className="min-h-screen flex items-center justify-center bg-black text-white">
-        Loading...
-      </div>
-    );
-  }
-
-  if (!user) {
-    return null; // redirect already happened
-  }
-
-  const handleRegisterFace = async (e) => {
-    e.preventDefault();
-    const token = localStorage.getItem("token");
-    const formData = new FormData(e.target);
+    const formData = new FormData();
+    formData.append("file", selectedFile);
+    formData.append("name", name);
 
     try {
-      const res = await fetch("http://127.0.0.1:8000/register-faces", {
+      const response = await fetch("http://localhost:8000/api/register-faces", {
         method: "POST",
-        headers: {
-          Authorization: `Bearer ${token}`,
-        },
         body: formData,
+        headers: {
+          Authorization: `Bearer ${session.accessToken}`,
+        },
       });
 
-      const data = await res.json();
-
-      if (res.ok) {
-        alert("Face registered successfully.");
-        e.target.reset();
+      if (response.ok) {
+        setMessage("Face registered successfully!");
+        setName("");
+        setSelectedFile(null);
       } else {
-        alert(data.detail || "Registration failed.");
+        const data = await response.json();
+        setMessage(data.detail || "Upload failed.");
       }
-    } catch (err) {
-      console.error("Error during face registration:", err);
-      alert("An error occurred.");
+    } catch (error) {
+      setMessage("Error uploading file.");
+      console.error(error);
     }
   };
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-gray-900 to-gray-950 flex items-center justify-center p-6">
-      <div className="w-full max-w-2xl rounded-3xl border border-gray-800 bg-gray-900 shadow-lg transition-all duration-300 hover:shadow-xl">
-        <div className="p-8 space-y-8">
-          <div className="space-y-6">
-            <h2 className="text-3xl font-extrabold text-white tracking-tight">
-              Attendance Overview
-            </h2>
-            <p className="text-gray-400 text-sm leading-relaxed">
-              Welcome, <span className="text-white font-medium">{user.username}</span>. Track student check-ins and attendance logs here.
-            </p>
+    <div className="min-h-screen bg-gray-900 text-white flex flex-col items-center justify-center px-4">
+      <h1 className="text-4xl font-bold mb-8">Smart Attendance Tracker</h1>
 
-            <div className="overflow-x-auto">
-              <table className="min-w-full text-left text-sm">
-                <thead className="bg-gray-800 text-gray-300">
-                  <tr>
-                    <th className="px-4 py-3">Student</th>
-                    <th className="px-4 py-3">Date</th>
-                    <th className="px-4 py-3">Status</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-gray-700">
-                  <tr className="hover:bg-gray-800">
-                    <td className="px-4 py-3 text-white">Jane Doe</td>
-                    <td className="px-4 py-3 text-gray-300">Aug 2, 2025</td>
-                    <td className="px-4 py-3">
-                      <span className="inline-block px-2 py-1 text-xs font-medium bg-green-700 text-green-100 rounded-full">
-                        Present
-                      </span>
-                    </td>
-                  </tr>
-                  <tr className="hover:bg-gray-800">
-                    <td className="px-4 py-3 text-white">John Smith</td>
-                    <td className="px-4 py-3 text-gray-300">Aug 2, 2025</td>
-                    <td className="px-4 py-3">
-                      <span className="inline-block px-2 py-1 text-xs font-medium bg-red-700 text-red-100 rounded-full">
-                        Absent
-                      </span>
-                    </td>
-                  </tr>
-                </tbody>
-              </table>
-            </div>
-          </div>
-
-          {/* Register Face Section */}
-          <div className="p-6 bg-gray-800 rounded-xl space-y-4">
-            <h3 className="text-xl text-white font-semibold">Register a New Face</h3>
-            <form onSubmit={handleRegisterFace} className="flex flex-col gap-4">
-              <input
-                type="text"
-                name="name"
-                placeholder="Student Name"
-                className="p-2 rounded bg-gray-700 text-white"
-                required
-              />
-              <input
-                type="file"
-                name="file"
-                accept="image/*"
-                className="text-white"
-                required
-              />
-              <button
-                type="submit"
-                className="bg-blue-600 hover:bg-blue-700 text-white py-2 px-4 rounded"
-              >
-                Register Face
-              </button>
-            </form>
-          </div>
+      <div className="p-6 bg-gray-800 rounded-xl space-y-4 w-full max-w-md shadow-lg">
+        <div>
+          <label className="block mb-2 text-sm font-medium">Name</label>
+          <input
+            type="text"
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+            className="w-full px-4 py-2 rounded bg-gray-700 border border-gray-600"
+          />
         </div>
+
+        <div>
+          <label className="block mb-2 text-sm font-medium">Upload Face Image</label>
+          <input
+            type="file"
+            accept="image/*"
+            onChange={handleFileChange}
+            className="w-full"
+          />
+        </div>
+
+        <button
+          onClick={handleUpload}
+          className="w-full bg-green-600 hover:bg-green-700 text-white py-2 px-4 rounded"
+        >
+          Register Face
+        </button>
+
+        {message && (
+          <p className="text-center text-sm text-yellow-400">{message}</p>
+        )}
+      </div>
+
+      {/* Buttons Container */}
+      <div className="pt-6 flex flex-col items-center space-y-4">
+        <button
+          onClick={() => router.push("/registered-faces")}
+          className="bg-purple-600 hover:bg-purple-700 text-white py-2 px-6 rounded-full transition-colors"
+        >
+          View Registered Faces
+        </button>
+
+        <button
+          onClick={() => router.push("/live-attendance")}
+          className="bg-sky-600 hover:bg-sky-700 text-white py-2 px-6 rounded-full transition-colors"
+        >
+          Start Live Attendance
+        </button>
       </div>
     </div>
   );

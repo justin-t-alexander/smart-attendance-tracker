@@ -1,8 +1,6 @@
 // app/layout.js
 import './globals.css';
-import Link from 'next/link';
-
-// app/layout.js
+import ClientProviders from './ClientProviders';
 
 export const metadata = {
   title: "Smart Attendance Tracker",
@@ -13,7 +11,9 @@ export default function RootLayout({ children }) {
   return (
     <html lang="en">
       <body className="min-h-screen bg-[var(--background)] text-[var(--foreground)]">
-        {children}
+        <ClientProviders>
+          {children}
+        </ClientProviders>
       </body>
     </html>
   );

@@ -33,6 +33,7 @@ class RegisteredFace(Base):
     name = Column(String, index=True)
     encoding = Column(LargeBinary)
     user_id = Column(Integer, ForeignKey("users.id"))  # Link to User table
+    image_data = Column(LargeBinary)
 
     user = relationship("User", back_populates="faces")
 

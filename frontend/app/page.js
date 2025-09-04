@@ -1,6 +1,3 @@
-
-
-
 // app/page.js
 
 // app/page.tsx or app/home/page.tsx (depending on your routing)
