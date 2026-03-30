@@ -10,17 +10,26 @@ export default function LiveAttendance() {
 
   useEffect(() => {
     // Fix WebSocket URL construction
-    const wsUrl = process.env.NEXT_PUBLIC_API_URL 
-      ? `${process.env.NEXT_PUBLIC_API_URL.replace(/^https?/, "ws")}/ws/live-attendance`
-      : "ws://localhost:8000/ws/live-attendance"; // fallback
+    const apiUrl = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+    const wsUrl = apiUrl.replace(/^https?/, "ws") + "/ws/live-attendance";
 
-    console.log("Connecting to WebSocket:", wsUrl);
+    console.log("API URL:", apiUrl);
+    console.log("WebSocket URL:", wsUrl);
+
+    // First, verify backend is running
+    fetch(`${apiUrl}/test`)
+      .then(res => res.json())
+      .then(data => console.log("Backend is running:", data))
+      .catch(err => {
+        console.error("Backend is not responding:", err);
+        setConnectionStatus("Backend Error");
+      });
 
     // Connect to WebSocket
     wsRef.current = new WebSocket(wsUrl);
 
     wsRef.current.onopen = () => {
-      console.log("WebSocket connection open");
+      console.log("✓ WebSocket OPENED");
       setConnectionStatus("Connected");
     };
 
@@ -29,29 +38,27 @@ export default function LiveAttendance() {
         const data = JSON.parse(event.data);
         if (Array.isArray(data)) {
           setResults(data);
-        } else {
-          console.error("Unexpected WS data:", data);
         }
       } catch (err) {
         console.error("Failed to parse WS message:", err);
       }
     };
 
-    wsRef.current.onerror = (err) => {
-      console.error("WS error:", err);
-      setConnectionStatus("Error");
+    wsRef.current.onerror = (event) => {
+      console.log("✗ WebSocket ERROR - ReadyState:", wsRef.current?.readyState);
+      setConnectionStatus("Connection Error");
     };
 
-    wsRef.current.onclose = () => {
-      console.log("WebSocket connection closed");
+    wsRef.current.onclose = (event) => {
+      console.log("✗ WebSocket CLOSED - Code:", event.code, "Reason:", event.reason);
       setConnectionStatus("Disconnected");
     };
 
     // Start webcam with proper error handling
     const initCamera = async () => {
       try {
-        const stream = await navigator.mediaDevices.getUserMedia({ 
-          video: { width: 640, height: 480 } 
+        const stream = await navigator.mediaDevices.getUserMedia({
+          video: { width: 1280, height: 720 }
         });
         
         if (videoRef.current) {
@@ -72,13 +79,13 @@ export default function LiveAttendance() {
 
     initCamera();
 
-    // Send frames periodically (reduced frequency to prevent overload)
+    // Send frames frequently for better accuracy
     const interval = setInterval(() => {
       if (
-        videoRef.current && 
-        wsRef.current && 
+        videoRef.current &&
+        wsRef.current &&
         wsRef.current.readyState === WebSocket.OPEN &&
-        videoRef.current.videoWidth > 0 // ensure video is loaded
+        videoRef.current.videoWidth > 0
       ) {
         try {
           const canvas = document.createElement("canvas");
@@ -86,13 +93,13 @@ export default function LiveAttendance() {
           canvas.height = videoRef.current.videoHeight;
           const ctx = canvas.getContext("2d");
           ctx.drawImage(videoRef.current, 0, 0);
-          const dataUrl = canvas.toDataURL("image/jpeg", 0.8); // reduce quality for faster transfer
+          const dataUrl = canvas.toDataURL("image/jpeg", 0.85);
           wsRef.current.send(dataUrl);
         } catch (err) {
           console.error("Frame capture error:", err);
         }
       }
-    }, 2000); // Increased to 2 seconds to reduce load
+    }, 800); // 800ms = ~1.25 fps for better accuracy
 
     return () => {
       clearInterval(interval);
@@ -134,20 +141,41 @@ export default function LiveAttendance() {
           playsInline // Important for mobile
         />
 
-        <div className="space-y-2">
+        <div className="space-y-3">
           {results.length === 0 ? (
             <p className="text-gray-400 text-center">No faces detected</p>
           ) : (
-            results.map((res, idx) => (
-              <p
-                key={idx}
-                className={
-                  res.status === "present" ? "text-green-500" : "text-red-500"
-                }
-              >
-                {res.name || "Unknown"}: {res.status}
-              </p>
-            ))
+            results.map((res, idx) => {
+              let bgColor = "bg-gray-700";
+              let textColor = "text-gray-300";
+
+              if (res.status === "present") {
+                bgColor = "bg-green-900";
+                textColor = "text-green-400";
+              } else if (res.status === "too_dark") {
+                bgColor = "bg-yellow-900";
+                textColor = "text-yellow-400";
+              } else if (res.status === "blurry") {
+                bgColor = "bg-orange-900";
+                textColor = "text-orange-400";
+              } else if (res.status === "unknown") {
+                bgColor = "bg-red-900";
+                textColor = "text-red-400";
+              }
+
+              return (
+                <div key={idx} className={`${bgColor} p-3 rounded`}>
+                  <p className={`${textColor} font-semibold`}>
+                    {res.name || "Unknown"}: {res.status}
+                  </p>
+                  {res.confidence !== undefined && (
+                    <p className="text-gray-300 text-sm">
+                      Confidence: {(res.confidence * 100).toFixed(1)}%
+                    </p>
+                  )}
+                </div>
+              );
+            })
           )}
         </div>
       </div>

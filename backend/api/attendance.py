@@ -7,14 +7,23 @@ from datetime import datetime
 import io
 import base64
 import cv2
+import asyncio
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
+from PIL import Image
+try:
+    import pillow_heif
+    pillow_heif.register_heif_opener()
+    HEIC_SUPPORT = True
+except ImportError:
+    HEIC_SUPPORT = False
 
 from models.database import (
     User,
     RegisteredFace,
     AttendanceLog,
     get_db,
+    SessionLocal,
 )
 
 from security import (
@@ -23,6 +32,8 @@ from security import (
     hash_password,
     get_current_user  # ⬅️ add this to extract user from token
 )
+
+from core.face_utils import FaceProcessor
 
 router = APIRouter()
 
@@ -34,71 +45,149 @@ router = APIRouter()
 # ---------------------------
 
 @router.websocket("/ws/live-attendance")
-async def attendance_ws(websocket: WebSocket, db: Session = Depends(get_db)):
+async def attendance_ws(websocket: WebSocket):
     # Accept connection immediately, no auth needed
     await websocket.accept()
+    db = None
+    frame_count = 0
 
     try:
+        db = SessionLocal()
+        print("WebSocket connection established")
+
         while True:
             # Receive frame from frontend
-            data = await websocket.receive_text()
-            if not data.startswith("data:image/jpeg;base64,"):
-                continue  # ignore invalid data
+            try:
+                data = await websocket.receive_text()
+            except (WebSocketDisconnect, RuntimeError):
+                print(f"Client disconnected after {frame_count} frames")
+                break
 
-            # Decode base64 → OpenCV image
-            frame_bytes = base64.b64decode(data.split(",")[1])
-            np_arr = np.frombuffer(frame_bytes, np.uint8)
-            frame = cv2.imdecode(np_arr, cv2.IMREAD_COLOR)
-            if frame is None:
-                continue  # skip empty frames
-                
-            rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            try:
+                if not data.startswith("data:image/jpeg;base64,"):
+                    continue  # ignore invalid data
 
-            # Detect faces
-            face_locations = face_recognition.face_locations(rgb_frame)
-            face_encodings = face_recognition.face_encodings(rgb_frame, face_locations)
+                frame_count += 1
 
-            results = []
+                # Decode base64 → OpenCV image
+                frame_bytes = base64.b64decode(data.split(",")[1])
+                np_arr = np.frombuffer(frame_bytes, np.uint8)
+                frame = cv2.imdecode(np_arr, cv2.IMREAD_COLOR)
+                if frame is None:
+                    continue  # skip empty frames
 
-            registered_faces = db.query(RegisteredFace).all()
-            known_encodings = [np.frombuffer(f.encoding, dtype=np.float64) for f in registered_faces]
+                # Preprocess image for better detection in poor lighting
+                enhanced_frame = FaceProcessor.preprocess_image(frame)
+                rgb_frame = cv2.cvtColor(enhanced_frame, cv2.COLOR_BGR2RGB)
 
-            for encoding in face_encodings:
-                matches = face_recognition.compare_faces(known_encodings, encoding)
-                if True in matches:
-                    idx = matches.index(True)
-                    face = registered_faces[idx]
-                    name = face.name
-                    user_id = face.user_id  # use user_id only
+                # Use HOG model for live detection - fast enough for real-time
+                # CNN is too slow and causes timeouts
+                loop = asyncio.get_event_loop()
+                face_locations = await loop.run_in_executor(
+                    None,
+                    lambda: face_recognition.face_locations(rgb_frame, model="hog", number_of_times_to_upsample=2)
+                )
 
-                    # Check for duplicate attendance today
-                    today = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
-                    exists = db.query(AttendanceLog).filter(
-                        AttendanceLog.user_id == user_id,
-                        AttendanceLog.date >= today.strftime("%Y-%m-%d")
-                    ).first()
+                # Filter out very small faces (likely false positives) - increase min size to prevent hand/object detection
+                face_locations = FaceProcessor.filter_faces_by_size(face_locations, min_face_size=50)
 
-                    if not exists:
-                        now = datetime.now()
-                        new_log = AttendanceLog(
-                            name=name,
-                            date=now.strftime("%Y-%m-%d"),
-                            time=now.strftime("%H:%M:%S"),
-                            user_id=user_id
-                        )
-                        db.add(new_log)
-                        db.commit()
+                if face_locations:
+                    # Debug: print detected face sizes
+                    for i, (top, right, bottom, left) in enumerate(face_locations):
+                        height = bottom - top
+                        width = right - left
+                        print(f"🔍 Detected face {i+1}: {width}x{height} pixels at position ({left}, {top})")
 
-                    results.append({"name": name, "status": "present", "user_id": user_id})
-                else:
-                    results.append({"name": None, "status": "unknown", "user_id": None})
+                # Get face encodings - use 1 jitter for real-time speed
+                # High jitter values (10+) cause timeouts in live detection
+                face_encodings = await loop.run_in_executor(
+                    None,
+                    lambda: face_recognition.face_encodings(rgb_frame, face_locations, num_jitters=1, model="large")
+                )
 
-            await websocket.send_json(results)
+                results = []
+
+                registered_faces = db.query(RegisteredFace).all()
+                known_encodings = [np.frombuffer(f.encoding, dtype=np.float64) for f in registered_faces]
+
+                for encoding in face_encodings:
+                    # Strict threshold (0.5) to avoid false positives with hands/objects
+                    is_match, confidence = FaceProcessor.compare_faces_with_distance(known_encodings, encoding, distance_threshold=0.5)
+
+                    # Debug: show distances
+                    if known_encodings:
+                        distances = face_recognition.face_distance(known_encodings, encoding)
+                        min_dist = np.min(distances)
+                        print(f"📏 Face distance: {min_dist:.3f} (threshold: 0.5) → {'✓ MATCH' if is_match else '✗ NO MATCH'}")
+                        print(f"   All distances: {[f'{d:.3f}' for d in distances]}")
+                    else:
+                        print("❌ No registered faces to compare against")
+
+                    if is_match:
+                        # Find the best matching face
+                        distances = face_recognition.face_distance(known_encodings, encoding)
+                        idx = np.argmin(distances)
+                        face = registered_faces[idx]
+                        name = face.name
+                        user_id = face.user_id
+
+                        # Check for duplicate attendance today
+                        today = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+                        exists = db.query(AttendanceLog).filter(
+                            AttendanceLog.user_id == user_id,
+                            AttendanceLog.date >= today.strftime("%Y-%m-%d")
+                        ).first()
+
+                        if not exists:
+                            now = datetime.now()
+                            new_log = AttendanceLog(
+                                name=name,
+                                date=now.strftime("%Y-%m-%d"),
+                                time=now.strftime("%H:%M:%S"),
+                                user_id=user_id
+                            )
+                            db.add(new_log)
+                            db.commit()
+
+                        results.append({
+                            "name": name,
+                            "status": "present",
+                            "user_id": user_id,
+                            "confidence": round(confidence, 3)
+                        })
+                    else:
+                        results.append({
+                            "name": None,
+                            "status": "unknown",
+                            "user_id": None,
+                            "confidence": round(1.0 - np.min(face_recognition.face_distance(known_encodings, encoding)) if known_encodings else 0, 3)
+                        })
+
+                await websocket.send_json(results)
+
+            except Exception as e:
+                # Send keepalive on error to keep connection alive
+                try:
+                    await websocket.send_json({"status": "processing"})
+                except:
+                    pass
+                print(f"⚠️ Frame {frame_count} error (skipping): {type(e).__name__}: {str(e)[:100]}")
+                # Skip this frame and continue to next one
+                continue
 
     except WebSocketDisconnect:
         print("Client disconnected")
     except Exception as e:
-        print(f"Error: {e}")
+        print(f"WebSocket error: {e}")
+        import traceback
+        traceback.print_exc()
+        try:
+            await websocket.close(code=1011, reason=str(e))
+        except:
+            pass
+    finally:
+        if db:
+            db.close()
 
 
 # ---------------------------
@@ -151,20 +240,85 @@ async def register_info(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
-    if not file.filename.lower().endswith(('.jpg', '.jpeg', '.png')):
-        raise HTTPException(status_code=400, detail="Invalid file type.")
+    allowed_types = ('.jpg', '.jpeg', '.png', '.heic', '.heif')
+    if not file.filename.lower().endswith(allowed_types):
+        raise HTTPException(status_code=400, detail="Invalid file type. Accepted: JPG, PNG, HEIC")
     if not name.strip():
         raise HTTPException(status_code=400, detail="Name cannot be empty.")
 
     # Read file contents
-    contents = await file.read()
+    file_contents = await file.read()
+
+    # Convert HEIC to JPEG if needed
+    if file.filename.lower().endswith(('.heic', '.heif')):
+        if not HEIC_SUPPORT:
+            raise HTTPException(status_code=400, detail="HEIC support not installed. Please use JPG or PNG.")
+        try:
+            img = Image.open(io.BytesIO(file_contents))
+            # Convert to RGB (in case of RGBA)
+            if img.mode in ('RGBA', 'LA', 'P'):
+                rgb_img = Image.new('RGB', img.size, (255, 255, 255))
+                rgb_img.paste(img, mask=img.split()[-1] if img.mode == 'RGBA' else None)
+                img = rgb_img
+            elif img.mode != 'RGB':
+                img = img.convert('RGB')
+            # Convert to JPEG bytes
+            jpeg_buffer = io.BytesIO()
+            img.save(jpeg_buffer, format='JPEG', quality=95)
+            jpeg_buffer.seek(0)  # Reset buffer position
+            contents = jpeg_buffer.getvalue()
+            print(f"✓ Converted HEIC to JPEG: {len(contents)} bytes")
+        except Exception as e:
+            print(f"✗ HEIC conversion error: {str(e)}")
+            raise HTTPException(status_code=400, detail=f"Failed to convert HEIC: {str(e)}")
+    else:
+        contents = file_contents
 
     # Load image for face encoding
-    image_np = face_recognition.load_image_file(io.BytesIO(contents))
-    face_encodings = face_recognition.face_encodings(image_np)
+    try:
+        image_np = face_recognition.load_image_file(io.BytesIO(contents))
+        print(f"✓ Image loaded: {image_np.shape}")
+
+        # Downscale if image is too large (for performance)
+        h, w = image_np.shape[:2]
+        max_size = 1200
+        if max(h, w) > max_size:
+            scale = max_size / max(h, w)
+            new_w, new_h = int(w * scale), int(h * scale)
+            image_np = cv2.resize(image_np, (new_w, new_h))
+            print(f"↓ Downscaled to: {image_np.shape}")
+    except Exception as e:
+        print(f"✗ Image load error: {str(e)}")
+        raise HTTPException(status_code=400, detail=f"Failed to load image: {str(e)}")
+
+    # Preprocess image for consistency with live detection
+    image_bgr = cv2.cvtColor(image_np, cv2.COLOR_RGB2BGR)
+    enhanced_image = FaceProcessor.preprocess_image(image_bgr)
+    image_np = cv2.cvtColor(enhanced_image, cv2.COLOR_BGR2RGB)
+
+    # Detect faces using same method as live detection (CNN + upsampling for consistency)
+    print(f"🔍 Starting face detection...")
+    try:
+        print(f"📊 Image shape before detection: {image_np.shape}")
+        face_locations = FaceProcessor.detect_faces_with_upsampling(image_np, use_cnn=True, upsample_num_times=1)
+        print(f"✓ Faces detected: {len(face_locations)}")
+        if not face_locations:
+            print("⚠️ No faces found in image")
+            raise HTTPException(status_code=404, detail="No faces found.")
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"✗ Face detection error: {type(e).__name__}: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=400, detail=f"Face detection failed: {str(e)}")
+
+    # Get encoding with high accuracy (12 jitters for registration - highest quality)
+    # Using more jitters than live detection ensures registration is more robust
+    face_encodings = FaceProcessor.get_face_encodings(image_np, face_locations, num_jitters=12)
 
     if not face_encodings:
-        raise HTTPException(status_code=404, detail="No faces found.")
+        raise HTTPException(status_code=404, detail="Could not process face. Please try again.")
 
     encoding = face_encodings[0]
 
@@ -241,7 +395,7 @@ async def check_attendance(
         raise HTTPException(status_code=404, detail="No faces found.")
 
     face_encodings = face_recognition.face_encodings(image, face_locations)
-    registered_faces = db.query(registeredFaces).filter_by(user_id=current_user.id).all()
+    registered_faces = db.query(RegisteredFace).filter_by(user_id=current_user.id).all()
     recognized_names = []
 
     for encoding in face_encodings:
@@ -249,13 +403,13 @@ async def check_attendance(
             known_encoding = np.frombuffer(registered_face.encoding, dtype=np.float64)
             match = face_recognition.compare_faces([known_encoding], encoding)[0]
             if match and registered_face.name not in recognized_names:
-                existing_entry = db.query(attendanceLog).filter_by(
+                existing_entry = db.query(AttendanceLog).filter_by(
                     name=registered_face.name,
                     date=str(datetime.date.today()),
                     user_id=current_user.id  # ⬅️ filter per user
                 ).first()
                 if not existing_entry:
-                    db.add(attendanceLog(
+                    db.add(AttendanceLog(
                         name=registered_face.name,
                         date=str(datetime.date.today()),
                         time=str(datetime.datetime.now().time()),
@@ -280,9 +434,9 @@ async def get_log(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
-    query = db.query(attendanceLog).filter_by(user_id=current_user.id)
+    query = db.query(AttendanceLog).filter_by(user_id=current_user.id)
     if date:
-        query = query.filter(attendanceLog.date == date)
+        query = query.filter(AttendanceLog.date == date)
 
     records = query.all()
 
@@ -303,7 +457,7 @@ def reset_logs(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
-    db.query(attendanceLog).filter_by(user_id=current_user.id).delete()
+    db.query(AttendanceLog).filter_by(user_id=current_user.id).delete()
     db.commit()
     return {"message": "Your attendance logs have been cleared."}
 
@@ -313,6 +467,6 @@ def reset_faces(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
-    db.query(registeredFaces).filter_by(user_id=current_user.id).delete()
+    db.query(RegisteredFace).filter_by(user_id=current_user.id).delete()
     db.commit()
     return {"message": "Your registered faces have been cleared."}
