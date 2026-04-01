@@ -45,7 +45,8 @@ class AttendanceLog(Base):
     name = Column(String, index=True)
     date = Column(String, index=True)
     time = Column(String, index=True)
-    user_id = Column(Integer, ForeignKey("users.id"))  # Link to User table
+    status = Column(String, default="present")
+    user_id = Column(Integer, ForeignKey("users.id"))
 
     user = relationship("User", back_populates="logs")
 

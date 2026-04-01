@@ -9,7 +9,7 @@ export default function Register() {
   const [password, setPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
   const [error, setError] = useState("");
-  const [message, setMessage] = useState("");
+  const [message, setMessage] = useState(""); // eslint-disable-line
   const router = useRouter();
 
   const handleRegister = async (e) => {
@@ -26,12 +26,9 @@ export default function Register() {
     }
 
     try {
-      // Call your backend registration endpoint
       const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/api/register`, {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ username, password }),
       });
 
@@ -42,7 +39,6 @@ export default function Register() {
         return;
       }
 
-      // Auto-login after registration
       const result = await signIn("credentials", {
         redirect: false,
         username,
@@ -61,56 +57,59 @@ export default function Register() {
   };
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-gray-50 to-gray-100 dark:from-gray-900 dark:to-gray-950 flex items-center justify-center p-6">
-      <div className="w-full max-w-md rounded-3xl border border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-900 shadow-lg transition-all duration-300 hover:shadow-xl hover:scale-[1.03] cursor-pointer">
-        <div className="p-8 space-y-6">
-          <h2 className="text-3xl font-extrabold text-gray-800 dark:text-white tracking-tight">
-            Create an Account
-          </h2>
-          <p className="text-gray-500 dark:text-gray-400 text-sm leading-relaxed">
-            Fill in your credentials to join the classroom.
-          </p>
+    <main className="min-h-screen bg-[#0a0a0f] text-white flex items-center justify-center p-6 relative overflow-hidden">
 
-          <form className="space-y-6" onSubmit={handleRegister}>
-            <div>
-              <label
-                htmlFor="username"
-                className="block mb-1 text-sm text-gray-700 dark:text-gray-300 font-semibold"
-              >
+      {/* Background glow */}
+      <div className="absolute top-[-20%] right-[-10%] w-[500px] h-[500px] bg-violet-700 opacity-15 rounded-full blur-[120px] pointer-events-none" />
+      <div className="absolute bottom-[-10%] left-[-5%] w-[400px] h-[400px] bg-purple-900 opacity-15 rounded-full blur-[100px] pointer-events-none" />
+
+      <div className="w-full max-w-md z-10">
+
+        {/* Back link */}
+        <a href="/login" className="inline-flex items-center gap-2 text-gray-500 hover:text-white text-sm mb-8 transition-colors duration-200">
+          ← Back to login
+        </a>
+
+        {/* Card */}
+        <div className="fade-in-up bg-white/5 border border-white/10 rounded-2xl p-8 space-y-6 backdrop-blur-sm">
+
+          {/* Header */}
+          <div className="space-y-1">
+            <h1 className="text-2xl font-bold tracking-tight">Create an account</h1>
+            <p className="text-gray-400 text-sm">Get started with Smart Attendance</p>
+          </div>
+
+          <form onSubmit={handleRegister} className="space-y-4">
+            <div className="space-y-1.5">
+              <label htmlFor="username" className="block text-sm font-medium text-gray-300">
                 Username
               </label>
               <input
                 id="username"
                 type="text"
-                placeholder="Your username"
+                placeholder="Choose a username"
                 value={username}
                 onChange={(e) => setUsername(e.target.value)}
-                className="w-full px-5 py-3 rounded-2xl border border-gray-300 dark:border-gray-700 bg-white dark:bg-gray-800 text-gray-900 dark:text-white focus:outline-none focus:ring-4 focus:ring-sky-400 dark:focus:ring-sky-600 transition-all duration-200"
+                className="w-full px-4 py-2.5 rounded-xl bg-white/5 border border-white/10 text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-violet-500 focus:border-transparent transition-all duration-200"
               />
             </div>
 
-            <div>
-              <label
-                htmlFor="password"
-                className="block mb-1 text-sm text-gray-700 dark:text-gray-300 font-semibold"
-              >
+            <div className="space-y-1.5">
+              <label htmlFor="password" className="block text-sm font-medium text-gray-300">
                 Password
               </label>
               <input
                 id="password"
                 type="password"
-                placeholder="Your password"
+                placeholder="Create a password"
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
-                className="w-full px-5 py-3 rounded-2xl border border-gray-300 dark:border-gray-700 bg-white dark:bg-gray-800 text-gray-900 dark:text-white focus:outline-none focus:ring-4 focus:ring-sky-400 dark:focus:ring-sky-600 transition-all duration-200"
+                className="w-full px-4 py-2.5 rounded-xl bg-white/5 border border-white/10 text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-violet-500 focus:border-transparent transition-all duration-200"
               />
             </div>
 
-            <div>
-              <label
-                htmlFor="confirmPassword"
-                className="block mb-1 text-sm text-gray-700 dark:text-gray-300 font-semibold"
-              >
+            <div className="space-y-1.5">
+              <label htmlFor="confirmPassword" className="block text-sm font-medium text-gray-300">
                 Confirm Password
               </label>
               <input
@@ -119,26 +118,38 @@ export default function Register() {
                 placeholder="Confirm your password"
                 value={confirmPassword}
                 onChange={(e) => setConfirmPassword(e.target.value)}
-                className="w-full px-5 py-3 rounded-2xl border border-gray-300 dark:border-gray-700 bg-white dark:bg-gray-800 text-gray-900 dark:text-white focus:outline-none focus:ring-4 focus:ring-sky-400 dark:focus:ring-sky-600 transition-all duration-200"
+                className="w-full px-4 py-2.5 rounded-xl bg-white/5 border border-white/10 text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-violet-500 focus:border-transparent transition-all duration-200"
               />
             </div>
 
             {error && (
-              <div className="text-red-500 text-sm font-medium">{error}</div>
+              <div className="flex items-center gap-2 bg-red-500/10 border border-red-500/20 text-red-400 text-sm px-4 py-2.5 rounded-xl">
+                <span>⚠</span> {error}
+              </div>
             )}
+
             {message && (
-              <div className="text-green-500 text-sm font-medium">{message}</div>
+              <div className="flex items-center gap-2 bg-green-500/10 border border-green-500/20 text-green-400 text-sm px-4 py-2.5 rounded-xl">
+                <span>✓</span> {message}
+              </div>
             )}
 
             <button
               type="submit"
-              className="w-full bg-sky-600 hover:bg-sky-700 text-white font-bold py-3 px-6 rounded-3xl shadow-md hover:shadow-xl transition-all duration-300 cursor-pointer transform hover:scale-105"
+              className="btn-gleam w-full bg-violet-600 hover:bg-violet-500 text-white font-semibold py-2.5 px-6 rounded-xl shadow-lg shadow-violet-900/30 mt-2"
             >
-              Register
+              Create Account
             </button>
           </form>
+
+          <p className="text-center text-sm text-gray-500">
+            Already have an account?{" "}
+            <a href="/login" className="text-violet-400 hover:text-violet-300 font-medium transition-colors duration-200">
+              Sign in
+            </a>
+          </p>
         </div>
       </div>
-    </div>
+    </main>
   );
 }

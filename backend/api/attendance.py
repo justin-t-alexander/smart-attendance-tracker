@@ -118,6 +118,7 @@ async def attendance_ws(websocket: WebSocket):
                 results = []
 
                 registered_faces = db.query(RegisteredFace).all()
+                print(f"Registered faces in DB: {[f.name for f in registered_faces]}")
                 known_encodings = [np.frombuffer(f.encoding, dtype=np.float64) for f in registered_faces]
 
                 # Only buffer encodings that are a plausible match (< 0.7 distance)
@@ -137,7 +138,7 @@ async def attendance_ws(websocket: WebSocket):
                 averaged_encodings = [averaged_encoding]
 
                 for encoding in averaged_encodings:
-                    is_match, confidence = FaceProcessor.compare_faces_with_distance(known_encodings, encoding, distance_threshold=0.5)
+                    is_match, confidence = FaceProcessor.compare_faces_with_distance(known_encodings, encoding, distance_threshold=0.55)
 
                     if face_locations and not face_encodings:
                         # Face detected but encoding failed (edge case)
@@ -182,6 +183,7 @@ async def attendance_ws(websocket: WebSocket):
                             "confidence": round(1.0 - np.min(face_recognition.face_distance(known_encodings, encoding)) if known_encodings else 0, 3)
                         })
 
+                print(f"Sending {len(results)} results: {[{'name': r['name'], 'status': r['status'], 'conf': r.get('confidence')} for r in results]}")
                 await websocket.send_json(results)
 
             except Exception as e:
@@ -445,7 +447,49 @@ async def check_attendance(
 
 
 # ---------------------------
-# Get attendance log
+# Get attendance log (used by dashboard)
+# ---------------------------
+@router.get("/api/attendance")
+async def get_attendance(
+    date: Optional[str] = None,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    query = db.query(AttendanceLog).filter_by(user_id=current_user.id)
+    if date:
+        query = query.filter(AttendanceLog.date == date)
+    records = query.all()
+    return [{"id": r.id, "name": r.name, "date": r.date, "time": r.time, "status": getattr(r, "status", "present")} for r in records]
+
+
+# ---------------------------
+# End session - mark absences
+# ---------------------------
+@router.post("/api/end-session")
+async def end_session(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    today = datetime.now().strftime("%Y-%m-%d")
+    registered = db.query(RegisteredFace).filter_by(user_id=current_user.id).all()
+    present_today = {r.name for r in db.query(AttendanceLog).filter_by(user_id=current_user.id, date=today).all()}
+    absent = []
+    for face in registered:
+        if face.name not in present_today:
+            db.add(AttendanceLog(
+                name=face.name,
+                date=today,
+                time=datetime.now().strftime("%H:%M:%S"),
+                user_id=current_user.id,
+                status="absent"
+            ))
+            absent.append(face.name)
+    db.commit()
+    return {"present": list(present_today), "absent": absent}
+
+
+# ---------------------------
+# Get attendance log (legacy)
 # ---------------------------
 @router.get("/log")
 async def get_log(
@@ -481,11 +525,27 @@ def reset_logs(
     return {"message": "Your attendance logs have been cleared."}
 
 
+@router.delete("/api/registered-faces/{face_id}")
+def delete_face(
+    face_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    face = db.query(RegisteredFace).filter_by(id=face_id, user_id=current_user.id).first()
+    if not face:
+        raise HTTPException(status_code=404, detail="Face not found")
+    # Delete all attendance logs for this person too
+    db.query(AttendanceLog).filter_by(name=face.name, user_id=current_user.id).delete()
+    db.delete(face)
+    db.commit()
+    return {"message": "Face and associated logs deleted"}
+
 @router.delete("/reset-faces")
 def reset_faces(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
+    db.query(AttendanceLog).filter_by(user_id=current_user.id).delete()
     db.query(RegisteredFace).filter_by(user_id=current_user.id).delete()
     db.commit()
-    return {"message": "Your registered faces have been cleared."}
+    return {"message": "All registered faces and logs cleared."}
