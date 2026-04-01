@@ -3,6 +3,17 @@ import numpy as np
 import face_recognition
 from typing import List, Tuple
 
+import os
+
+# YuNet DNN face detector - far superior to Haar/HOG at distances and angles
+_YUNET_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), "yunet.onnx")
+_yunet = cv2.FaceDetectorYN.create(
+    _YUNET_PATH, "", (320, 320),
+    score_threshold=0.7,
+    nms_threshold=0.3,
+    top_k=5000
+)
+
 class FaceProcessor:
     """Improved face detection and recognition with better accuracy for poor lighting and distances"""
 
@@ -15,26 +26,58 @@ class FaceProcessor:
     def preprocess_image(frame: np.ndarray) -> np.ndarray:
         """
         Enhance image quality for better face detection in poor lighting and shadows.
-        Uses advanced preprocessing for robustness.
+        Uses gamma correction + CLAHE for robustness across environments.
         """
-        # Convert to LAB color space for better lighting adjustment
-        lab = cv2.cvtColor(frame, cv2.COLOR_BGR2LAB)
+        # Auto gamma correction: brighten dark images toward target brightness of 128
+        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        avg_brightness = np.mean(gray)
+        target = 128.0 / 255.0
+        normalized = max(avg_brightness / 255.0, 0.01)
+        gamma = np.log(normalized) / np.log(target)  # correct formula: raises to 1/gamma
+        gamma = np.clip(gamma, 0.5, 3.0)
+        inv_gamma = 1.0 / gamma
+
+        table = np.array([((i / 255.0) ** inv_gamma) * 255 for i in range(256)]).astype("uint8")
+        gamma_corrected = cv2.LUT(frame, table)
+
+        # CLAHE on luminance channel for local contrast enhancement (handles shadows)
+        lab = cv2.cvtColor(gamma_corrected, cv2.COLOR_BGR2LAB)
         l, a, b = cv2.split(lab)
-
-        # Apply CLAHE with stronger settings for shadow handling
-        # Higher clipLimit = more aggressive contrast enhancement (good for shadows)
-        clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(6, 6))
+        clahe = cv2.createCLAHE(clipLimit=2.5, tileGridSize=(6, 6))
         l = clahe.apply(l)
+        enhanced = cv2.cvtColor(cv2.merge([l, a, b]), cv2.COLOR_LAB2BGR)
 
-        # Merge channels back
-        lab = cv2.merge([l, a, b])
-        enhanced = cv2.cvtColor(lab, cv2.COLOR_LAB2BGR)
-
-        # Apply bilateral filter to reduce noise while preserving edges
-        # Important for shadowed areas which are often noisy
-        denoised = cv2.bilateralFilter(enhanced, 9, 75, 75)
+        # Bilateral filter to reduce noise while preserving face edges
+        denoised = cv2.bilateralFilter(enhanced, 7, 50, 50)
 
         return denoised
+
+    @staticmethod
+    def detect_faces_yunet(rgb_frame: np.ndarray) -> List[Tuple]:
+        """
+        Detect faces using YuNet DNN - handles distance, angles, and poor lighting
+        much better than Haar or HOG.
+        Returns face locations in (top, right, bottom, left) for face_recognition.
+        """
+        h, w = rgb_frame.shape[:2]
+        bgr = cv2.cvtColor(rgb_frame, cv2.COLOR_RGB2BGR)
+
+        _yunet.setInputSize((w, h))
+        _, detections = _yunet.detect(bgr)
+
+        if detections is None:
+            return []
+
+        face_locations = []
+        for det in detections:
+            x, y, fw, fh = int(det[0]), int(det[1]), int(det[2]), int(det[3])
+            top    = max(0, y)
+            left   = max(0, x)
+            bottom = min(h, y + fh)
+            right  = min(w, x + fw)
+            face_locations.append((top, right, bottom, left))
+
+        return face_locations
 
     @staticmethod
     def detect_faces_with_upsampling(

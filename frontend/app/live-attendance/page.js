@@ -44,7 +44,7 @@ export default function LiveAttendance() {
       }
     };
 
-    wsRef.current.onerror = (event) => {
+    wsRef.current.onerror = () => {
       console.log("✗ WebSocket ERROR - ReadyState:", wsRef.current?.readyState);
       setConnectionStatus("Connection Error");
     };
@@ -57,8 +57,27 @@ export default function LiveAttendance() {
     // Start webcam with proper error handling
     const initCamera = async () => {
       try {
+        // Request permission first so Safari reveals device labels
+        await navigator.mediaDevices.getUserMedia({ video: true });
+
+        const devices = await navigator.mediaDevices.enumerateDevices();
+        const videoDevices = devices.filter(d => d.kind === "videoinput");
+        console.log("Available cameras:", videoDevices.map(d => d.label));
+
+        const iPhoneCamera = videoDevices.find(d =>
+          (d.label.toLowerCase().includes("iphone") ||
+           d.label.toLowerCase() === "ok camera") &&
+          !d.label.toLowerCase().includes("desk")
+        );
+        const macCamera = videoDevices.find(d =>
+          d.label.toLowerCase().includes("facetime") ||
+          d.label.toLowerCase().includes("built-in")
+        );
+        const selectedDevice = iPhoneCamera || macCamera || videoDevices[0];
+        console.log("Using camera:", selectedDevice?.label);
+
         const stream = await navigator.mediaDevices.getUserMedia({
-          video: { width: 1280, height: 720 }
+          video: { deviceId: { exact: selectedDevice?.deviceId }, width: { ideal: 1920 }, height: { ideal: 1080 }, frameRate: { ideal: 30 } }
         });
         
         if (videoRef.current) {
@@ -99,7 +118,7 @@ export default function LiveAttendance() {
           console.error("Frame capture error:", err);
         }
       }
-    }, 800); // 800ms = ~1.25 fps for better accuracy
+    }, 500); // 500ms = 2 fps - faster detection without overwhelming backend
 
     return () => {
       clearInterval(interval);
@@ -134,11 +153,12 @@ export default function LiveAttendance() {
           </span>
         </div>
 
-        <video 
-          ref={videoRef} 
-          className="w-full h-auto rounded-lg mb-6" 
-          muted // Important: prevents audio feedback
-          playsInline // Important for mobile
+        <video
+          ref={videoRef}
+          className="w-full h-auto rounded-lg mb-6"
+          muted
+          playsInline
+          autoPlay
         />
 
         <div className="space-y-3">

@@ -50,6 +50,9 @@ async def attendance_ws(websocket: WebSocket):
     await websocket.accept()
     db = None
     frame_count = 0
+    # Rolling buffer of recent encodings per face slot for averaging
+    encoding_buffer = []
+    BUFFER_SIZE = 5  # average over last 5 frames for stable matching
 
     try:
         db = SessionLocal()
@@ -76,55 +79,71 @@ async def attendance_ws(websocket: WebSocket):
                 if frame is None:
                     continue  # skip empty frames
 
-                # Preprocess image for better detection in poor lighting
-                enhanced_frame = FaceProcessor.preprocess_image(frame)
-                rgb_frame = cv2.cvtColor(enhanced_frame, cv2.COLOR_BGR2RGB)
+                gray_check = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+                avg_brightness = np.mean(gray_check)
 
-                # Use HOG model for live detection - fast enough for real-time
-                # CNN is too slow and causes timeouts
+                # Skip pitch-black frames (covered camera or lights off)
+                if avg_brightness < 15:
+                    await websocket.send_json([])
+                    continue
+
+                rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+
                 loop = asyncio.get_event_loop()
+
+                # YuNet DNN detection - far superior to Haar/HOG at distance and angles
                 face_locations = await loop.run_in_executor(
                     None,
-                    lambda: face_recognition.face_locations(rgb_frame, model="hog", number_of_times_to_upsample=2)
+                    lambda: FaceProcessor.detect_faces_yunet(rgb_frame)
                 )
 
-                # Filter out very small faces (likely false positives) - increase min size to prevent hand/object detection
-                face_locations = FaceProcessor.filter_faces_by_size(face_locations, min_face_size=50)
+                face_locations = FaceProcessor.filter_faces_by_size(face_locations, min_face_size=20)
+                print(f"Frame {frame_count}: brightness={avg_brightness:.0f}, faces={len(face_locations)}")
 
-                if face_locations:
-                    # Debug: print detected face sizes
-                    for i, (top, right, bottom, left) in enumerate(face_locations):
-                        height = bottom - top
-                        width = right - left
-                        print(f"🔍 Detected face {i+1}: {width}x{height} pixels at position ({left}, {top})")
+                # Clear buffer when face is lost so stale encodings don't pollute future matches
+                if not face_locations:
+                    encoding_buffer.clear()
+                    await websocket.send_json([])
+                    continue
 
-                # Get face encodings - use 1 jitter for real-time speed
-                # High jitter values (10+) cause timeouts in live detection
                 face_encodings = await loop.run_in_executor(
                     None,
                     lambda: face_recognition.face_encodings(rgb_frame, face_locations, num_jitters=1, model="large")
                 )
+
+                if not face_encodings:
+                    await websocket.send_json([])
+                    continue
 
                 results = []
 
                 registered_faces = db.query(RegisteredFace).all()
                 known_encodings = [np.frombuffer(f.encoding, dtype=np.float64) for f in registered_faces]
 
-                for encoding in face_encodings:
-                    # Strict threshold (0.5) to avoid false positives with hands/objects
+                # Only buffer encodings that are a plausible match (< 0.7 distance)
+                # Prevents bad frames (side angle, dark, noise) from polluting the average
+                if known_encodings:
+                    dist = np.min(face_recognition.face_distance(known_encodings, face_encodings[0]))
+                    if dist < 0.7:
+                        encoding_buffer.append(face_encodings[0])
+                        if len(encoding_buffer) > BUFFER_SIZE:
+                            encoding_buffer.pop(0)
+                else:
+                    encoding_buffer.append(face_encodings[0])
+                    if len(encoding_buffer) > BUFFER_SIZE:
+                        encoding_buffer.pop(0)
+
+                averaged_encoding = np.mean(encoding_buffer, axis=0) if len(encoding_buffer) >= 3 else face_encodings[0]
+                averaged_encodings = [averaged_encoding]
+
+                for encoding in averaged_encodings:
                     is_match, confidence = FaceProcessor.compare_faces_with_distance(known_encodings, encoding, distance_threshold=0.5)
 
-                    # Debug: show distances
-                    if known_encodings:
-                        distances = face_recognition.face_distance(known_encodings, encoding)
-                        min_dist = np.min(distances)
-                        print(f"📏 Face distance: {min_dist:.3f} (threshold: 0.5) → {'✓ MATCH' if is_match else '✗ NO MATCH'}")
-                        print(f"   All distances: {[f'{d:.3f}' for d in distances]}")
-                    else:
-                        print("❌ No registered faces to compare against")
+                    if face_locations and not face_encodings:
+                        # Face detected but encoding failed (edge case)
+                        results.append({"name": None, "status": "unknown", "confidence": 0})
 
                     if is_match:
-                        # Find the best matching face
                         distances = face_recognition.face_distance(known_encodings, encoding)
                         idx = np.argmin(distances)
                         face = registered_faces[idx]
